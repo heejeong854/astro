@@ -1,216 +1,104 @@
 import streamlit as st
-
+import plotly.express as px
+import plotly.graph_objects as go
+import pandas as pd
+from PIL import Image, ExifTags
 import numpy as np
 
-from astropy.io import fits
+# 앱 제목
+st.title("서울 기준 동적 천체 거리 나이 시각화")
 
-from PIL import Image
+# 이미지 업로드
+st.header("이미지 업로드")
+uploaded_image = st.file_uploader("천체 이미지를 업로드하세요 (선택 사항, JPG, PNG)", type=["jpg", "jpeg", "png"])
 
-from astropy.coordinates import SkyCoord, EarthLocation, AltAz
-
-from astropy.time import Time
-
-from datetime import datetime
-
-
-# --- Streamlit 앱 페이지 설정 ---
-
-st.set_page_config(page_title="천문 이미지 분석기", layout="wide")
-
-st.title("🔭 천문 이미지 처리 앱")
-
-
-# --- 파일 업로더 ---
-
-uploaded_file = st.file_uploader(
-
-    "분석할 FITS 파일을 선택하세요.",
-
-    type=['fits', 'fit', 'fz']
-
-)
-
-
-# --- 서울 위치 설정 (고정값) ---
-
-seoul_location = EarthLocation(lat=37.5665, lon=126.9780, height=50)  # 서울 위도/경도/고도
-
-
-# --- 현재 시간 (UTC 기준) ---
-
-now = datetime.utcnow()
-
-now_astropy = Time(now)
-
-
-# --- 파일이 업로드되면 실행될 로직 ---
-
-if uploaded_file:
-
+# EXIF 데이터에서 방위각 추출
+def get_exif_data(image):
     try:
-
-        with fits.open(uploaded_file) as hdul:
-
-            image_hdu = None
-
-            for hdu in hdul:
-
-                if hdu.data is not None and hdu.is_image:
-
-                    image_hdu = hdu
-
-                    break
-
-
-            if image_hdu is None:
-
-                st.error("파일에서 유효한 이미지 데이터를 찾을 수 없습니다.")
-
-            else:
-
-                header = image_hdu.header
-
-                data = image_hdu.data
-
-                data = np.nan_to_num(data)
-
-
-                st.success(f"**'{uploaded_file.name}'** 파일을 성공적으로 처리했습니다.")
-
-                col1, col2 = st.columns(2)
-
-
-                with col1:
-
-                    st.header("이미지 정보")
-
-                    st.text(f"크기: {data.shape[1]} x {data.shape[0]} 픽셀")
-
-                    if 'OBJECT' in header:
-
-                        st.text(f"관측 대상: {header['OBJECT']}")
-
-                    if 'EXPTIME' in header:
-
-                        st.text(f"노출 시간: {header['EXPTIME']} 초")
-
-
-                    st.header("물리량")
-
-                    mean_brightness = np.mean(data)
-
-                    st.metric(label="이미지 전체 평균 밝기", value=f"{mean_brightness:.2f}")
-
-
-                with col2:
-
-                    st.header("이미지 미리보기")
-
-                    if data.max() == data.min():
-
-                        norm_data = np.zeros(data.shape, dtype=np.uint8)
-
-                    else:
-
-                        scale_min = np.percentile(data, 5)
-
-                        scale_max = np.percentile(data, 99.5)
-
-                        data_clipped = np.clip(data, scale_min, scale_max)
-
-                        norm_data = (255 * (data_clipped - scale_min) / (scale_max - scale_min)).astype(np.uint8)
-
-
-                    img = Image.fromarray(norm_data)
-
-                    st.image(img, caption="업로드된 FITS 이미지", use_container_width=True)
-
-
-
-                # --- 사이드바: 현재 천체 위치 계산 ---
-
-                st.sidebar.header("🧭 현재 천체 위치 (서울 기준)")
-
-
-                if 'RA' in header and 'DEC' in header:
-
-                    try:
-
-                        target_coord = SkyCoord(ra=header['RA'], dec=header['DEC'], unit=('hourangle', 'deg'))
-
-                        altaz = target_coord.transform_to(AltAz(obstime=now_astropy, location=seoul_location))
-
-                        altitude = altaz.alt.degree
-
-                        azimuth = altaz.az.degree
-
-
-                        st.sidebar.metric("고도 (°)", f"{altitude:.2f}")
-
-                        st.sidebar.metric("방위각 (°)", f"{azimuth:.2f}")
-
-                    except Exception as e:
-
-                        st.sidebar.warning(f"천체 위치 계산 실패: {e}")
-
-                else:
-
-                    st.sidebar.info("FITS 헤더에 RA/DEC 정보가 없습니다.")
-
-
-    except Exception as e:
-
-        st.error(f"파일 처리 중 오류가 발생했습니다: {e}")
-
-        st.warning("파일이 손상되었거나 유효한 FITS 형식이 아닐 수 있습니다.")
-
+        exif_data = image._getexif()
+        if exif_data is not None:
+            for tag, value in exif_data.items():
+                tag_name = ExifTags.TAGS.get(tag, tag)
+                if tag_name == "GPSInfo":
+                    gps_info = value
+                    for gps_tag, gps_value in gps_info.items():
+                        gps_tag_name = ExifTags.GPSTAGS.get(gps_tag, gps_tag)
+                        if gps_tag_name == "GPSImgDirection":
+                            return gps_value[0] / gps_value[1]  # 방위각 (도)
+        return None
+    except Exception:
+        return None
+
+# 이미지 처리 및 방위각 표시
+if uploaded_image is not None:
+    image = Image.open(uploaded_image)
+    st.image(image, caption="업로드된 이미지", use_column_width=True)
+    azimuth_data = get_exif_data(image)
+    if azimuth_data is not None:
+        st.write(f"이미지에서 추출된 방위각: {azimuth_data:.2f}° (참고용, 입력값이 우선)")
+    else:
+        st.write("이미지에서 방위각 정보를 추출할 수 없습니다.")
 else:
+    st.write("이미지를 업로드하면 여기에 표시됩니다.")
 
-    st.info("시작하려면 FITS 파일을 업로드해주세요.")
+# 사용자 입력
+st.header("천체 위치와 나이 입력")
+st.write("서울(위도 37.57°N, 경도 126.98°E)을 기준으로 천체 위치를 입력하세요.")
+current_age = st.number_input("현재 나이를 입력하세요 (세):", min_value=0, max_value=120, value=30, step=1)
+distance = st.number_input("천체까지의 거리 (광년):", min_value=0.0, value=10.0, step=0.1)
+azimuth = st.number_input("방위각 (도, 0°~360°):", min_value=0.0, max_value=360.0, value=26.13, step=0.1)
+altitude = st.number_input("고도 (도, -90°~90°):", min_value=-90.0, max_value=90.0, value=42.12, step=0.1)
 
+# 나이 계산
+observed_age = max(0, current_age - distance)
 
-# --- 💬 댓글 기능 (세션 기반) ---
+# 결과 표시
+st.header("결과")
+st.write(f"현재 나이: {current_age}세")
+st.write(f"천체 위치: 방위각 {azimuth:.2f}°, 고도 {altitude:.2f}°, 거리 {distance} 광년")
+st.write(f"{distance} 광년 떨어진 천체에서 관찰되는 당신의 나이: {observed_age}세")
 
-st.divider()
+# 나이 비교 시각화
+st.header("나이 비교 시각화")
+data_age = {
+    "상황": ["현재 나이", "관찰된 나이"],
+    "나이 (세)": [current_age, observed_age]
+}
+df_age = pd.DataFrame(data_age)
+fig_age = px.bar(df_age, x="상황", y="나이 (세)", title="현재 나이와 천체에서 관찰된 나이 비교",
+                 color="상황", color_discrete_sequence=["#636EFA", "#EF553B"])
+fig_age.update_layout(width=600, height=400)
+st.plotly_chart(fig_age)
 
-st.header("💬 의견 남기기")
+# 천체 위치 시각화 (극좌표 플롯)
+st.header("천체 위치 시각화 (방위각과 고도)")
+fig_pos = go.Figure()
+r = 90 - abs(altitude)  # 고도를 반지름으로 변환
+fig_pos.add_trace(go.Scatterpolar(
+    r=[r],
+    theta=[azimuth],
+    mode="markers+text",
+    name="천체 위치",
+    text=[f"방위각: {azimuth:.2f}°, 고도: {altitude:.2f}°"],
+    marker=dict(size=10, color="#EF553B")
+))
+fig_pos.update_layout(
+    polar=dict(
+        radialaxis=dict(range=[0, 90], visible=True),
+        angularaxis=dict(direction="clockwise")
+    ),
+    showlegend=True,
+    width=600,
+    height=400
+)
+st.plotly_chart(fig_pos)
 
-
-if "comments" not in st.session_state:
-
-    st.session_state.comments = []
-
-
-with st.form(key="comment_form"):
-
-    name = st.text_input("이름을 입력하세요", key="name_input")
-
-    comment = st.text_area("댓글을 입력하세요", key="comment_input")
-
-    submitted = st.form_submit_button("댓글 남기기")
-
-
-    if submitted:
-
-        if name.strip() and comment.strip():
-
-            st.session_state.comments.append((name.strip(), comment.strip()))
-
-            st.success("댓글이 저장되었습니다.")
-
-        else:
-
-            st.warning("이름과 댓글을 모두 입력해주세요.")
-
-
-if st.session_state.comments:
-
-    st.subheader("📋 전체 댓글")
-
-    for i, (n, c) in enumerate(reversed(st.session_state.comments), 1):
-
-        st.markdown(f"**{i}. {n}**: {c}")
-
-else:
-
-    st.info("아직 댓글이 없습니다. 첫 댓글을 남겨보세요!")
+# 설명
+st.header("설명")
+st.write("""
+서울(위도 37.57°N, 경도 126.98°E)을 기준으로 입력한 방위각과 고도에 위치한 천체를 사용합니다.
+빛은 유한한 속도로 이동하므로, 입력한 거리(광년)만큼 과거의 당신의 모습을 봅니다.
+예를 들어, 10광년 떨어진 천체에서는 당신이 10년 전의 모습(즉, 현재 나이 - 10세)을 보게 됩니다.
+업로드한 이미지는 참고용으로 표시되며, EXIF 데이터에서 방위각을 추출할 수 있으면 참고로 보여줍니다.
+방위각과 고도는 사용자가 입력한 값이 우선 적용됩니다.
+""")
